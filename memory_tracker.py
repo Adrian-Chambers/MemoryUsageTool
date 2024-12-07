@@ -1,5 +1,7 @@
+import os
 import tkinter as tk
 from tkinter import ttk
+from tkinter import messagebox
 from ttkthemes import ThemedTk
 import psutil
 from plyer import notification
@@ -26,6 +28,9 @@ class MemoryTrackerApp:
         # Sort state for maintaining order across updates
         self.current_sort_column = None
         self.current_sort_reverse = False
+
+        # Store selected process information to handle table refresh
+        self.selected_process_info = None
 
         # Main Frame
         self.main_frame = ttk.Frame(root, padding=10)
@@ -70,17 +75,45 @@ class MemoryTrackerApp:
         self.usage_frame.grid(row=3, column=0, sticky="nsew", pady=10)
         self.main_frame.grid_rowconfigure(3, weight=1)
 
+        # Create vertical scrollbar
+        scroll_y = ttk.Scrollbar(self.usage_frame, orient="vertical")
+
+        # Add the usage table
         columns = ("Application", "Usage", "Recommendation")
-        self.usage_table = ttk.Treeview(self.usage_frame, columns=columns, show="headings", height=8)
+        self.usage_table = ttk.Treeview(self.usage_frame, columns=columns, show="headings", height=8, yscrollcommand=scroll_y.set)
+
+        # Attach scrollbar to the Treeview
+        scroll_y.config(command=self.usage_table.yview)
+        scroll_y.pack(side="right", fill="y")  # Place scrollbar to the right of the table
+
         self.usage_table.pack(fill="both", expand=True)
 
-        for col in columns:
-            self.usage_table.heading(
-                col, text=col,
-                command=lambda _col=col: self.sort_treeview(self.usage_table, _col, False)
-            )
-            self.usage_table.column(col, width=200, anchor="center")
+        # Configure column widths and behavior
+        self.usage_table.heading("Application", text="Application", command=lambda: self.sort_treeview(self.usage_table, "Application", False))
+        self.usage_table.column("Application", width=200, anchor="center", stretch=False)
+
+        self.usage_table.heading("Usage", text="Usage", command=lambda: self.sort_treeview(self.usage_table, "Usage", False))
+        self.usage_table.column("Usage", width=100, anchor="center", stretch=False)
+
+        self.usage_table.heading("Recommendation", text="Recommendation", command=lambda: self.sort_treeview(self.usage_table, "Recommendation", False))
+        self.usage_table.column("Recommendation", width=400, anchor="w", stretch=True)
+
+        # Add a horizontal scrollbar for the table (optional)
+        scroll_x = ttk.Scrollbar(self.usage_frame, orient="horizontal", command=self.usage_table.xview)
+        self.usage_table.configure(xscrollcommand=scroll_x.set)
+        scroll_x.pack(side="bottom", fill="x")
+
+        # Populate the table
         self.update_usage_table()
+
+        # Context menu for the usage table (right-click actions)
+        self.context_menu = tk.Menu(self.root, tearoff=0)
+        self.context_menu.add_command(label="Kill Process", command=self.kill_selected_process)
+        self.context_menu.add_command(label="Open File Location", command=self.open_file_location)
+        self.context_menu.add_command(label="View Details", command=self.view_process_details)
+
+        # Bind right-click to show the context menu
+        self.usage_table.bind("<Button-3>", self.show_context_menu)
 
         # Notifications Section
         self.notifications_frame = ttk.LabelFrame(self.main_frame, text="Notification Settings", padding=10)
@@ -107,13 +140,27 @@ class MemoryTrackerApp:
         self.flagged_table = ttk.Treeview(self.flagged_frame, columns=flagged_columns, show="headings", height=6)
         self.flagged_table.pack(fill="both", expand=True)
 
-        for col in flagged_columns:
-            self.flagged_table.heading(col, text=col)
-            self.flagged_table.column(col, width=200, anchor="center")
+        # Configure column widths and behavior
+        self.flagged_table.heading("Application", text="Application")
+        self.flagged_table.column("Application", width=200, anchor="center", stretch=False)
+
+        self.flagged_table.heading("Usage", text="Usage")
+        self.flagged_table.column("Usage", width=100, anchor="center", stretch=False)
+
+        self.flagged_table.heading("Reason", text="Reason")
+        self.flagged_table.column("Reason", width=400, anchor="w", stretch=True)
+
+        # Add a horizontal scrollbar for the flagged table
+        flagged_scroll_x = ttk.Scrollbar(self.flagged_frame, orient="horizontal", command=self.flagged_table.xview)
+        self.flagged_table.configure(xscrollcommand=flagged_scroll_x.set)
+        flagged_scroll_x.pack(side="bottom", fill="x")
+
+        # Populate the flagged table
         self.update_flagged_table()
 
         # Footer
         ttk.Label(self.main_frame, text="Memory Tracker Tool - Version 1.0", font=("Arial", 10, "italic")).grid(row=6, column=0, pady=10)
+
 
     def get_cached_processes(self):
         """Fetch process data, updating the cache if necessary."""
@@ -122,7 +169,7 @@ class MemoryTrackerApp:
                 self.process_cache = list(psutil.process_iter(['pid', 'name', 'memory_info', 'exe']))
                 self.last_cache_update = time()
             except Exception:
-                self.process_cache = []  # Handle error gracefully
+                self.process_cache = [] 
         return self.process_cache
 
     def update_efficiency_bar(self):
@@ -194,6 +241,10 @@ class MemoryTrackerApp:
         for proc in self.get_cached_processes():
             try:
                 pinfo = proc.info
+                # Ensure 'memory_info' exists in the process info dictionary
+                if 'memory_info' not in pinfo:
+                    continue
+
                 mem_info = pinfo['memory_info']
                 mem_usage_mb = mem_info.vms / (1024 * 1024)
 
@@ -202,14 +253,14 @@ class MemoryTrackerApp:
                     recommendation = self.generate_recommendation(pinfo['name'], mem_usage_mb)
                     self.usage_table.insert("", "end", values=(pinfo['name'], f"{mem_usage_mb:.2f} MB", recommendation))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-
+                continue  # Skip processes that are inaccessible
         # Reapply the current sort order
         if self.current_sort_column is not None:
             self.sort_treeview(self.usage_table, self.current_sort_column, self.current_sort_reverse)
 
         # Schedule the next update
         self.root.after(5000, self.update_usage_table)
+
 
 
     def generate_recommendation(self, app_name, memory_usage):
@@ -254,7 +305,144 @@ class MemoryTrackerApp:
         # Default Recommendation
         return "Consider closing the application if not actively using it."
 
+    def show_context_menu(self, event):
+        """Show context menu and store selected process details."""
+        try:
+            # Identify the row under the cursor
+            row_id = self.usage_table.identify_row(event.y)
+            if row_id:
+                self.usage_table.selection_set(row_id)  # Select the row
+                # Store the selected process details
+                selected_item = self.usage_table.item(row_id, "values")
+                app_name = selected_item[0]  # Application name
+                self.selected_process_info = self.get_process_info_by_name(app_name)
+                # Show the context menu
+                self.context_menu.post(event.x_root, event.y_root)
+            else:
+                self.selected_process_info = None  # Clear selection if no row
+        except Exception as e:
+            print(f"Error showing context menu: {e}")
 
+    # Show the context menu on right-click
+    def get_process_info_by_name(self, app_name):
+        """Retrieve process information by name."""
+        for proc in self.get_cached_processes():
+            if proc.info["name"] == app_name:
+                return proc.info  # Return the full process info dictionary
+        return None
+
+    # Kill the selected process
+    def kill_selected_process(self):
+        """Kill all processes with the same name as the selected process."""
+        try:
+            if self.selected_process_info:
+                app_name = self.selected_process_info["name"]  # Get the name of the process
+                processes_to_kill = [
+                    proc for proc in psutil.process_iter(['name', 'pid'])
+                    if proc.info['name'] == app_name
+                ]
+
+                if not processes_to_kill:
+                    messagebox.showinfo("Process Gone", "The process no longer exists.")
+                    return
+
+                # Attempt to terminate all matching processes
+                successfully_terminated = []
+                failed_to_terminate = []
+
+                for process in processes_to_kill:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=3)  # Wait up to 3 seconds for the process to terminate
+                        successfully_terminated.append(process)
+                    except psutil.NoSuchProcess:
+                        continue  # Process already terminated
+                    except psutil.AccessDenied:
+                        failed_to_terminate.append(process)
+                    except psutil.TimeoutExpired:
+                        failed_to_terminate.append(process)
+
+                # Handle results
+                if successfully_terminated:
+                    unique_names = set([p.info['name'] for p in successfully_terminated])
+                    if len(unique_names) == 1:
+                        # All terminated processes share the same name
+                        terminated_name = next(iter(unique_names))
+                        messagebox.showinfo("Success", f"Terminated: {terminated_name} and all subprocesses.")
+                    else:
+                        # Multiple process names were terminated
+                        terminated_names = ", ".join(unique_names)
+                        messagebox.showinfo("Success", f"Terminated: {terminated_names}")
+
+                if failed_to_terminate:
+                    failed_names = ", ".join(set([p.info['name'] for p in failed_to_terminate]))
+                    messagebox.showerror("Error", f"Failed to terminate: {failed_names}")
+
+                # Refresh the table to reflect updated process list
+                self.refresh_process_cache()
+                self.update_usage_table()
+            else:
+                messagebox.showerror("Error", "No process selected.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not terminate process: {e}")
+
+
+
+
+    def refresh_process_cache(self):
+        """Force a refresh of the process cache."""
+        try:
+            self.process_cache = list(psutil.process_iter(['pid', 'name', 'memory_info', 'exe']))
+            self.last_cache_update = time()
+        except Exception as e:
+            print(f"Error refreshing process cache: {e}")
+
+
+
+    # Open the file location of the selected process
+    def open_file_location(self):
+        """Open the file location of the selected process."""
+        try:
+            if self.selected_process_info:
+                exe_path = self.selected_process_info.get("exe", "")
+                if exe_path and os.path.exists(exe_path):
+                    os.startfile(os.path.dirname(exe_path))
+                else:
+                    messagebox.showerror("Error", "Executable path not found.")
+            else:
+                messagebox.showerror("Error", "No process selected.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open file location: {e}")
+
+
+    # View detailed information about the selected process
+    def view_process_details(self):
+        """View detailed information about the selected process."""
+        try:
+            if self.selected_process_info:
+                process = psutil.Process(self.selected_process_info["pid"])
+                details = (
+                    f"Name: {process.name()}\n"
+                    f"PID: {process.pid}\n"
+                    f"Status: {process.status()}\n"
+                    f"CPU Usage: {process.cpu_percent(interval=0.1)}%\n"
+                    f"Memory Usage: {process.memory_info().rss / (1024 * 1024):.2f} MB\n"
+                    f"Executable: {process.exe()}\n"
+                    f"Threads: {process.num_threads()}\n"
+                )
+                messagebox.showinfo("Process Details", details)
+            else:
+                messagebox.showerror("Error", "No process selected.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not fetch process details: {e}")
+
+
+    # Helper function to get the PID of a process by its name
+    def get_pid_by_name(self, app_name):
+        for proc in self.get_cached_processes():
+            if proc.info['name'] == app_name:
+                return proc.info['pid']
+        return None
 
     def update_flagged_table(self):
         self.flagged_table.delete(*self.flagged_table.get_children())
@@ -263,7 +451,7 @@ class MemoryTrackerApp:
                 pinfo = proc.info
                 mem_info = pinfo['memory_info']
                 mem_usage_mb = mem_info.vms / (1024 * 1024)
-                if mem_usage_mb > 1000:  # Flag processes using more than 1000 MB
+                if mem_usage_mb > 1000:
                     self.flagged_table.insert("", "end", values=(pinfo['name'], f"{mem_usage_mb:.2f} MB", "High memory usage"))
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 pass
