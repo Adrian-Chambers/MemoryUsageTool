@@ -17,8 +17,9 @@ class MemoryTrackerApp:
         self.root.geometry("900x1000")
 
         # Global Configurations
-        self.usage_analyzer_threshold = 200  # Default lower threshold (in MB)
-        self.flagged_applications_threshold = 1500  # Default higher threshold (in MB)
+        total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+        self.usage_analyzer_threshold = max(200, total_memory_mb * 0.02)  # Default: 2% of total memory or 200 MB
+        self.flagged_applications_threshold = max(1500, total_memory_mb * 0.15)  # Default: 15% of total memory or 1500 MB
         self.process_cache = []
         self.last_cache_update = 0
         self.cache_duration = 15  # Refresh every 15 seconds
@@ -26,6 +27,9 @@ class MemoryTrackerApp:
         self.current_sort_reverse = False
         self.selected_process_info = None
         self.executor = ThreadPoolExecutor(max_workers=4)  # Thread pool for background tasks
+        self.highest_memory_notifications = tk.BooleanVar(value=False)  # Default: Notifications are off
+        self.flagged_memory_notifications = tk.BooleanVar(value=True)  # Default: Enabled
+
 
         # Main Frame
         self.main_frame = ttk.Frame(self.root, padding=10)
@@ -35,17 +39,29 @@ class MemoryTrackerApp:
         self.main_frame.grid_columnconfigure(0, weight=1)
 
         # Setup GUI Sections
-        self.setup_title()
-        self.setup_efficiency_section()
-        self.setup_threshold_adjustment()
-        self.setup_usage_analyzer()
-        self.setup_notifications()
-        self.setup_flagged_applications()
-        self.setup_footer()
+        self.setup_title()  # Title
+        self.setup_efficiency_section()  # Efficiency Bar
+        self.setup_highest_memory_applications()  # Includes Usage Analyzer Threshold
+        self.setup_flagged_applications()  # Includes Flagged Applications Threshold
+        self.setup_footer()  # Footer
+        self.setup_context_menus()  # Setup context menus for both tables
+
 
         # Start background updates
         self.schedule_background_updates()
         self.update_efficiency_bar()
+        self.update_usage_table()  # Populate on startup
+        self.update_flagged_table()  # Populate on startup
+
+    def refresh_process_cache(self):
+        """Fetch and cache process data."""
+        try:
+            self.process_cache = list(psutil.process_iter(['pid', 'name', 'memory_info', 'cpu_percent', 'exe']))
+            self.last_cache_update = time()
+            print(f"Process cache updated: {len(self.process_cache)} processes found.")  # Debug
+        except Exception as e:
+            print(f"Error refreshing process cache: {e}")
+
 
     # --- GUI Setup Methods ---
     def setup_title(self):
@@ -56,65 +72,139 @@ class MemoryTrackerApp:
     def setup_efficiency_section(self):
         """Setup the overall efficiency section."""
         self.score_frame = ttk.LabelFrame(self.main_frame, text="Overall Efficiency", padding=10)
-        self.score_frame.grid(row=1, column=0, sticky="ew", pady=10)
+        self.score_frame.grid(row=1, column=0, sticky="ew", pady=15)
 
+        # Efficiency bar
         self.efficiency_bar = ttk.Progressbar(self.score_frame, orient="horizontal", length=300, mode="determinate")
-        self.efficiency_bar.pack(fill="x", pady=5)
+        self.efficiency_bar.pack(fill="x", pady=5, padx=10)
 
-        self.efficiency_label = ttk.Label(self.score_frame, text="Efficiency Score: Calculating...", font=("Arial", 14))
-        self.efficiency_label.pack()
+        # Efficiency score label
+        self.efficiency_label = ttk.Label(self.score_frame, text="Efficiency Score: Calculating...", font=("Arial", 12))
+        self.efficiency_label.pack(pady=(5, 0))  # Small padding above
 
-        self.efficiency_status = ttk.Label(self.score_frame, text="Status: Calculating...", font=("Arial", 12, "italic"), foreground="green")
-        self.efficiency_status.pack()
+        # Status label
+        self.efficiency_status = ttk.Label(self.score_frame, text="Status: Calculating...", font=("Arial", 12), foreground="green")
+        self.efficiency_status.pack(pady=(0, 5))  # Small padding below
 
-    def setup_threshold_adjustment(self):
-        """Setup the threshold adjustment section."""
-        self.threshold_frame = ttk.LabelFrame(self.main_frame, text="Threshold Adjustment", padding=10)
-        self.threshold_frame.grid(row=2, column=0, sticky="ew", pady=10)
 
-        ttk.Label(self.threshold_frame, text="Usage Analyzer Threshold (MB):", font=("Arial", 12)).grid(row=0, column=0, sticky="w", padx=10, pady=5)
-        self.usage_threshold_input = ttk.Entry(self.threshold_frame, font=("Arial", 12), width=10)
-        self.usage_threshold_input.grid(row=0, column=1, sticky="w", padx=10)
-        self.usage_threshold_input.insert(0, f"{self.usage_analyzer_threshold:.2f}")
-
-        ttk.Label(self.threshold_frame, text="Flagged Applications Threshold (MB):", font=("Arial", 12)).grid(row=1, column=0, sticky="w", padx=10, pady=5)
-        self.flagged_threshold_input = ttk.Entry(self.threshold_frame, font=("Arial", 12), width=10)
-        self.flagged_threshold_input.grid(row=1, column=1, sticky="w", padx=10)
-        self.flagged_threshold_input.insert(0, f"{self.flagged_applications_threshold:.2f}")
-
-        self.update_threshold_button = ttk.Button(self.threshold_frame, text="Update Thresholds", command=self.update_thresholds)
-        self.update_threshold_button.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=5)
-
-    def update_thresholds(self):
-        """Update the memory thresholds for usage analyzer and flagged applications."""
+    def update_percentage_from_mb(self, event=None):
+        """Update percentage fields based on MB input."""
         try:
-            new_usage_threshold = float(self.usage_threshold_input.get())
-            new_flagged_threshold = float(self.flagged_threshold_input.get())
-            if new_usage_threshold <= 0 or new_flagged_threshold <= 0:
-                raise ValueError("Thresholds must be greater than 0.")
-            self.usage_analyzer_threshold = new_usage_threshold
-            self.flagged_applications_threshold = new_flagged_threshold
-            print(f"Updated Usage Analyzer Threshold: {self.usage_analyzer_threshold:.2f} MB")
-            print(f"Updated Flagged Applications Threshold: {self.flagged_applications_threshold:.2f} MB")
-            self.update_usage_table()
-            self.update_flagged_table()
-        except ValueError:
-            messagebox.showerror("Error", "Invalid threshold values. Please enter positive numbers.")
+            total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
 
-    def setup_usage_analyzer(self):
-        """Setup the Usage Analyzer table."""
-        self.usage_frame = ttk.LabelFrame(self.main_frame, text="Usage Analyzer", padding=10)
-        self.usage_frame.grid(row=3, column=0, sticky="nsew", pady=10)
+            # Update Usage Analyzer Threshold Percentage
+            if self.usage_threshold_mb.get():
+                usage_mb = float(self.usage_threshold_mb.get())
+                usage_percent = (usage_mb / total_memory_mb) * 100
+                self.usage_threshold_percent.delete(0, tk.END)
+                self.usage_threshold_percent.insert(0, f"{usage_percent:.2f}")
+
+            # Update Flagged Applications Threshold Percentage
+            if self.flagged_threshold_mb.get():
+                flagged_mb = float(self.flagged_threshold_mb.get())
+                flagged_percent = (flagged_mb / total_memory_mb) * 100
+                self.flagged_threshold_percent.delete(0, tk.END)
+                self.flagged_threshold_percent.insert(0, f"{flagged_percent:.2f}")
+
+        except ValueError:
+            pass  # Ignore invalid inputs
+
+
+    def update_mb_from_percentage(self, event=None):
+        """Update MB fields based on percentage input."""
+        try:
+            total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+
+            # Update Usage Analyzer Threshold MB
+            if self.usage_threshold_percent.get():
+                usage_percent = float(self.usage_threshold_percent.get())
+                usage_mb = (usage_percent / 100) * total_memory_mb
+                self.usage_threshold_mb.delete(0, tk.END)
+                self.usage_threshold_mb.insert(0, f"{usage_mb:.2f}")
+
+            # Update Flagged Applications Threshold MB
+            if self.flagged_threshold_percent.get():
+                flagged_percent = float(self.flagged_threshold_percent.get())
+                flagged_mb = (flagged_percent / 100) * total_memory_mb
+                self.flagged_threshold_mb.delete(0, tk.END)
+                self.flagged_threshold_mb.insert(0, f"{flagged_mb:.2f}")
+
+        except ValueError:
+            pass  # Ignore invalid inputs
+        
+
+    def setup_highest_memory_applications(self):
+        """Setup the Highest Memory Applications table with threshold inputs."""
+        self.usage_frame = ttk.LabelFrame(self.main_frame, text="Highest Memory Applications", padding=10)
+        self.usage_frame.grid(row=3, column=0, sticky="nsew", pady=15)
         self.main_frame.grid_rowconfigure(3, weight=1)
 
+        # Add description label
+        description_label = ttk.Label(
+            self.usage_frame,
+            text="Displays applications consuming significant memory. Adjust the threshold to control which applications are shown.",
+            font=("Arial", 10),
+            anchor="w",
+        )
+        description_label.pack(pady=(0, 10), padx=5)
+
+        # Threshold inputs for Highest Memory Applications
+        threshold_frame = ttk.Frame(self.usage_frame)
+        threshold_frame.pack(fill="x", padx=5, pady=(0, 10))
+
+        ttk.Label(threshold_frame, text="Usage Analyzer Threshold (MB):", font=("Arial", 10)).grid(
+            row=0, column=0, sticky="w", padx=(0, 5)
+        )
+        self.usage_threshold_mb = ttk.Entry(threshold_frame, font=("Arial", 10), width=10)
+        self.usage_threshold_mb.grid(row=0, column=1, sticky="w", padx=(0, 10))
+        self.usage_threshold_mb.insert(0, f"{self.usage_analyzer_threshold:.2f}")
+
+        ttk.Label(threshold_frame, text="or %:", font=("Arial", 10)).grid(
+            row=0, column=2, sticky="w", padx=(5, 5)
+        )
+        self.usage_threshold_percent = ttk.Entry(threshold_frame, font=("Arial", 10), width=10)
+        self.usage_threshold_percent.grid(row=0, column=3, sticky="w")
+        self.usage_threshold_percent.insert(0, f"{(self.usage_analyzer_threshold / (psutil.virtual_memory().total / (1024 * 1024))) * 100:.2f}")
+
+        # Reset to Default Button with Description
+        reset_button = ttk.Button(threshold_frame, text="Reset to Default", command=self.reset_usage_threshold)
+        reset_button.grid(row=0, column=4, padx=(10, 0))
+
+        # Explanation Label
+        ttk.Label(
+            threshold_frame,
+            text="Defaults: 2% of total memory or 200 MB, whichever is higher.",
+            font=("Arial", 9, "italic")
+        ).grid(row=1, column=0, columnspan=5, sticky="w", padx=(0, 10), pady=(5, 0))
+
+        # Bind the syncing function to both fields
+        self.usage_threshold_mb.bind("<KeyRelease>", lambda e: self.sync_threshold_fields(
+            self.usage_threshold_mb, self.usage_threshold_percent, self.update_usage_table, source="mb"))
+        self.usage_threshold_percent.bind("<KeyRelease>", lambda e: self.sync_threshold_fields(
+            self.usage_threshold_mb, self.usage_threshold_percent, self.update_usage_table, source="percent"))
+
+        # Add notification toggle
+        notifications_frame = ttk.Frame(self.usage_frame)
+        notifications_frame.pack(fill="x", padx=5, pady=(10, 0))
+
+        notifications_checkbox = ttk.Checkbutton(
+            notifications_frame,
+            text="Enable Notifications for High Memory Applications",
+            variable=self.highest_memory_notifications
+        )
+        notifications_checkbox.pack(anchor="w")
+
+        # Table for applications
         scroll_y = ttk.Scrollbar(self.usage_frame, orient="vertical")
         columns = ("Application", "Usage", "Recommendation")
-        
-        # Increased the height of the table
-        self.usage_table = ttk.Treeview(self.usage_frame, columns=columns, show="headings", height=12, yscrollcommand=scroll_y.set)
+
+        self.usage_table = ttk.Treeview(
+            self.usage_frame, columns=columns, show="headings", height=15, yscrollcommand=scroll_y.set
+        )
         scroll_y.config(command=self.usage_table.yview)
         scroll_y.pack(side="right", fill="y")
-        self.usage_table.pack(fill="both", expand=True)
+        self.usage_table.pack(fill="both", expand=True, padx=5)
+        self.usage_table.bind("<Button-3>", self.show_usage_context_menu)
 
         self.configure_table_columns(self.usage_table, {
             "Application": {"width": 200, "anchor": "center"},
@@ -122,34 +212,170 @@ class MemoryTrackerApp:
             "Recommendation": {"width": 400, "anchor": "w"},
         })
 
-    def setup_notifications(self):
-        """Setup the Notifications section."""
-        self.notifications_frame = ttk.LabelFrame(self.main_frame, text="Notification Settings", padding=10)
-        self.notifications_frame.grid(row=4, column=0, sticky="ew", pady=10)
-        self.notif_options = {
-            "Close unused applications": tk.BooleanVar(value=True),
-            "Optimize memory usage": tk.BooleanVar(value=True),
-            "Flag unusual behavior": tk.BooleanVar(value=False),
-        }
-        notif_frame = ttk.Frame(self.notifications_frame)
-        notif_frame.pack(anchor="w", padx=20)
-        for text, var in self.notif_options.items():
-            ttk.Checkbutton(notif_frame, text=text, variable=var).pack(anchor="w", pady=2)
+
+
+
+    def show_usage_context_menu(self, event):
+        """Show the context menu for the Usage Analyzer table."""
+        try:
+            # Identify the row under the cursor
+            row_id = self.usage_table.identify_row(event.y)
+            if row_id:
+                self.usage_table.selection_set(row_id)  # Select the row
+                selected_item = self.usage_table.item(row_id, "values")
+                if selected_item:
+                    app_name = selected_item[0]  # Application name from the table
+                    self.selected_process_info = self.get_process_info_by_name(app_name)
+                    self.usage_context_menu.post(event.x_root, event.y_root)
+                else:
+                    self.selected_process_info = None
+            else:
+                self.selected_process_info = None
+        except Exception as e:
+            print(f"Error showing usage context menu: {e}")
+
+    def show_flagged_context_menu(self, event):
+        """Show the context menu for the Flagged Applications table."""
+        try:
+            # Identify the row under the cursor
+            row_id = self.flagged_table.identify_row(event.y)
+            if row_id:
+                self.flagged_table.selection_set(row_id)  # Select the row
+                selected_item = self.flagged_table.item(row_id, "values")
+                if selected_item:
+                    app_name = selected_item[0]  # Application name from the table
+                    self.selected_process_info = self.get_process_info_by_name(app_name)
+                    self.flagged_context_menu.post(event.x_root, event.y_root)
+                else:
+                    self.selected_process_info = None
+            else:
+                self.selected_process_info = None
+        except Exception as e:
+            print(f"Error showing flagged context menu: {e}")
+
+
+
+
+    def get_process_info_by_name(self, app_name):
+        """Retrieve process information by process name."""
+        for proc in self.process_cache:
+            try:
+                if proc.info['name'] == app_name:  # Match by process name
+                    return proc.info  # Return the full process info dictionary
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return None  # Return None if no matching process is found
+
+    def update_usage_threshold(self):
+        """Update the Usage Analyzer threshold based on the input fields and refresh the table."""
+        try:
+            total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+
+            if self.usage_threshold_mb.get():
+                self.usage_analyzer_threshold = float(self.usage_threshold_mb.get())
+                self.usage_threshold_percent.delete(0, tk.END)
+                self.usage_threshold_percent.insert(0, f"{(self.usage_analyzer_threshold / total_memory_mb) * 100:.2f}")
+
+            elif self.usage_threshold_percent.get():
+                percent_value = float(self.usage_threshold_percent.get())
+                self.usage_analyzer_threshold = (percent_value / 100) * total_memory_mb
+                self.usage_threshold_mb.delete(0, tk.END)
+                self.usage_threshold_mb.insert(0, f"{self.usage_analyzer_threshold:.2f}")
+
+            self.update_usage_table()
+        except ValueError:
+            messagebox.showerror("Error", "Invalid input in Usage Analyzer threshold fields. Please enter valid numbers.")
+
+
+    def update_flagged_threshold(self):
+        """Update the Flagged Applications threshold based on the input fields and refresh the table."""
+        try:
+            total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+
+            if self.flagged_threshold_mb.get():
+                self.flagged_applications_threshold = float(self.flagged_threshold_mb.get())
+                self.flagged_threshold_percent.delete(0, tk.END)
+                self.flagged_threshold_percent.insert(0, f"{(self.flagged_applications_threshold / total_memory_mb) * 100:.2f}")
+
+            elif self.flagged_threshold_percent.get():
+                percent_value = float(self.flagged_threshold_percent.get())
+                self.flagged_applications_threshold = (percent_value / 100) * total_memory_mb
+                self.flagged_threshold_mb.delete(0, tk.END)
+                self.flagged_threshold_mb.insert(0, f"{self.flagged_applications_threshold:.2f}")
+
+            self.update_flagged_table()
+        except ValueError:
+            messagebox.showerror("Error", "Invalid input in Flagged Applications threshold fields. Please enter valid numbers.")
 
     def setup_flagged_applications(self):
-        """Setup the Flagged Applications table."""
-        self.flagged_frame = ttk.LabelFrame(self.main_frame, text="Flagged Applications", padding=10)
-        self.flagged_frame.grid(row=5, column=0, sticky="nsew", pady=10)
+        """Setup the Suspicious Applications table with threshold inputs."""
+        self.flagged_frame = ttk.LabelFrame(self.main_frame, text="Suspicious Applications", padding=10)
+        self.flagged_frame.grid(row=5, column=0, sticky="nsew", pady=15)
         self.main_frame.grid_rowconfigure(5, weight=1)
 
+        # Add description label
+        description_label = ttk.Label(
+            self.flagged_frame,
+            text="Lists applications with unusually high memory usage. Adjust the threshold to detect potential memory leaks or harmful programs.",
+            font=("Arial", 10),
+            anchor="w",
+        )
+        description_label.pack(pady=(0, 10), padx=5)
+
+        # Threshold inputs for Suspicious Applications
+        threshold_frame = ttk.Frame(self.flagged_frame)
+        threshold_frame.pack(fill="x", padx=5, pady=(0, 10))
+
+        ttk.Label(threshold_frame, text="Flagged Applications Threshold (MB):", font=("Arial", 10)).grid(
+            row=0, column=0, sticky="w", padx=(0, 5)
+        )
+        self.flagged_threshold_mb = ttk.Entry(threshold_frame, font=("Arial", 10), width=10)
+        self.flagged_threshold_mb.grid(row=0, column=1, sticky="w", padx=(0, 10))
+        self.flagged_threshold_mb.insert(0, f"{self.flagged_applications_threshold:.2f}")
+
+        ttk.Label(threshold_frame, text="or %:", font=("Arial", 10)).grid(
+            row=0, column=2, sticky="w", padx=(5, 5)
+        )
+        self.flagged_threshold_percent = ttk.Entry(threshold_frame, font=("Arial", 10), width=10)
+        self.flagged_threshold_percent.grid(row=0, column=3, sticky="w")
+        self.flagged_threshold_percent.insert(0, f"{(self.flagged_applications_threshold / (psutil.virtual_memory().total / (1024 * 1024))) * 100:.2f}")
+
+        # Reset to Default Button with Description
+        reset_button = ttk.Button(threshold_frame, text="Reset to Default", command=self.reset_flagged_threshold)
+        reset_button.grid(row=0, column=4, padx=(10, 0))
+
+        # Explanation Label
+        ttk.Label(
+            threshold_frame,
+            text="Defaults: 15% of total memory or 1500 MB, whichever is higher.",
+            font=("Arial", 9, "italic")
+        ).grid(row=1, column=0, columnspan=5, sticky="w", padx=(0, 10), pady=(5, 0))
+
+        # Bind the syncing function to both fields
+        self.flagged_threshold_mb.bind("<KeyRelease>", lambda e: self.sync_threshold_fields(
+            self.flagged_threshold_mb, self.flagged_threshold_percent, self.update_flagged_table, source="mb"))
+        self.flagged_threshold_percent.bind("<KeyRelease>", lambda e: self.sync_threshold_fields(
+            self.flagged_threshold_mb, self.flagged_threshold_percent, self.update_flagged_table, source="percent"))
+
+        # Notification Setting
+        notif_checkbox = ttk.Checkbutton(
+            threshold_frame,
+            text="Enable Notifications",
+            variable=self.flagged_memory_notifications
+        )
+        notif_checkbox.grid(row=2, column=0, columnspan=5, sticky="w", padx=(0, 10), pady=(5, 0))
+
+        # Table for flagged applications
         scroll_y = ttk.Scrollbar(self.flagged_frame, orient="vertical")
         columns = ("Application", "Usage", "Reason")
 
-        # Increased the height of the table
-        self.flagged_table = ttk.Treeview(self.flagged_frame, columns=columns, show="headings", height=10, yscrollcommand=scroll_y.set)
+        self.flagged_table = ttk.Treeview(
+            self.flagged_frame, columns=columns, show="headings", height=12, yscrollcommand=scroll_y.set
+        )
         scroll_y.config(command=self.flagged_table.yview)
         scroll_y.pack(side="right", fill="y")
-        self.flagged_table.pack(fill="both", expand=True)
+        self.flagged_table.pack(fill="both", expand=True, padx=5)
+        self.flagged_table.bind("<Button-3>", self.show_flagged_context_menu)
 
         self.configure_table_columns(self.flagged_table, {
             "Application": {"width": 200, "anchor": "center"},
@@ -157,30 +383,183 @@ class MemoryTrackerApp:
             "Reason": {"width": 400, "anchor": "w"},
         })
 
+    
+    def reset_usage_threshold(self):
+        """Reset the Usage Analyzer threshold to its default value."""
+        total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+        self.usage_analyzer_threshold = max(200, total_memory_mb * 0.02)
+        self.usage_threshold_mb.delete(0, tk.END)
+        self.usage_threshold_mb.insert(0, f"{self.usage_analyzer_threshold:.2f}")
+        self.usage_threshold_percent.delete(0, tk.END)
+        self.usage_threshold_percent.insert(0, f"{(self.usage_analyzer_threshold / total_memory_mb) * 100:.2f}")
+        self.update_usage_table()
+
+
+    def reset_flagged_threshold(self):
+        """Reset the Flagged Applications threshold to its default value."""
+        total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+        self.flagged_applications_threshold = max(1500, total_memory_mb * 0.15)
+        self.flagged_threshold_mb.delete(0, tk.END)
+        self.flagged_threshold_mb.insert(0, f"{self.flagged_applications_threshold:.2f}")
+        self.flagged_threshold_percent.delete(0, tk.END)
+        self.flagged_threshold_percent.insert(0, f"{(self.flagged_applications_threshold / total_memory_mb) * 100:.2f}")
+        self.update_flagged_table()
+
+
+    def show_flagged_context_menu(self, event):
+        """Show the context menu for the flagged applications table."""
+        try:
+            row_id = self.flagged_table.identify_row(event.y)
+            if row_id:
+                self.flagged_table.selection_set(row_id)
+                selected_item = self.flagged_table.item(row_id, "values")
+                if selected_item:
+                    app_name = selected_item[0]  # Application name from the table
+                    self.selected_process_info = self.get_process_info_by_name(app_name)
+                    self.flagged_context_menu.post(event.x_root, event.y_root)
+                else:
+                    self.selected_process_info = None
+            else:
+                self.selected_process_info = None
+        except Exception as e:
+            print(f"Error showing context menu: {e}")
+
+    def setup_context_menus(self):
+        """Setup context menus for both tables."""
+        # Usage Table Context Menu
+        self.usage_context_menu = tk.Menu(self.root, tearoff=0)
+        self.usage_context_menu.add_command(label="Kill Process", command=self.kill_selected_process)
+        self.usage_context_menu.add_command(label="Open File Location", command=self.open_file_location)
+        self.usage_context_menu.add_command(label="View Details", command=self.view_process_details)
+
+        # Flagged Table Context Menu
+        self.flagged_context_menu = tk.Menu(self.root, tearoff=0)
+        self.flagged_context_menu.add_command(label="Kill Process", command=self.kill_selected_process)
+        self.flagged_context_menu.add_command(label="Open File Location", command=self.open_file_location)
+        self.flagged_context_menu.add_command(label="View Details", command=self.view_process_details)
+
+
+    def kill_selected_process(self):
+        """Kill all processes with the same name as the selected process."""
+        try:
+            if self.selected_process_info:
+                app_name = self.selected_process_info.get("name")  # Get the name of the process
+                if not app_name:
+                    messagebox.showerror("Error", "No process name found.")
+                    return
+
+                # Find all processes with the same name
+                processes_to_kill = [
+                    proc for proc in psutil.process_iter(['name', 'pid'])
+                    if proc.info['name'] == app_name
+                ]
+
+                if not processes_to_kill:
+                    messagebox.showinfo("Process Gone", "The process no longer exists.")
+                    return
+
+                # Attempt to terminate all matching processes
+                successfully_terminated = []
+                failed_to_terminate = []
+
+                for process in processes_to_kill:
+                    try:
+                        process.terminate()
+                        process.wait(timeout=3)  # Wait up to 3 seconds for the process to terminate
+                        successfully_terminated.append(process)
+                    except psutil.NoSuchProcess:
+                        continue  # Process already terminated
+                    except psutil.AccessDenied:
+                        failed_to_terminate.append(process)
+                    except psutil.TimeoutExpired:
+                        failed_to_terminate.append(process)
+
+                # Handle results
+                if successfully_terminated:
+                    unique_names = set([p.info['name'] for p in successfully_terminated])
+                    if len(unique_names) == 1:
+                        # All terminated processes share the same name
+                        terminated_name = next(iter(unique_names))
+                        messagebox.showinfo("Success", f"Terminated: {terminated_name} and all subprocesses.")
+                    else:
+                        # Multiple process names were terminated
+                        terminated_names = ", ".join(unique_names)
+                        messagebox.showinfo("Success", f"Terminated: {terminated_names}")
+
+                if failed_to_terminate:
+                    failed_names = ", ".join(set([p.info['name'] for p in failed_to_terminate]))
+                    messagebox.showerror("Error", f"Failed to terminate: {failed_names}")
+
+                # Refresh the table to reflect updated process list
+                self.refresh_process_cache()
+                self.update_usage_table()
+                self.update_flagged_table()
+            else:
+                messagebox.showerror("Error", "No process selected.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not terminate process: {e}")
+
+
+    def open_file_location(self):
+        """Open the file location of the selected process."""
+        try:
+            if self.selected_process_info:
+                exe_path = self.selected_process_info.get("exe", None)
+                if exe_path and os.path.exists(exe_path):
+                    os.startfile(os.path.dirname(exe_path))  # Open the folder containing the executable
+                else:
+                    messagebox.showerror("Error", "Executable path not found or inaccessible.")
+            else:
+                messagebox.showerror("Error", "No process selected.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open file location: {e}")
+
+
+    def view_process_details(self):
+        """View detailed information about the selected process."""
+        try:
+            if self.selected_process_info:
+                process = psutil.Process(self.selected_process_info["pid"])
+                details = (
+                    f"Name: {process.name()}\n"
+                    f"PID: {process.pid}\n"
+                    f"Status: {process.status()}\n"
+                    f"CPU Usage: {process.cpu_percent(interval=0.1)}%\n"
+                    f"Memory Usage: {process.memory_info().rss / (1024 * 1024):.2f} MB\n"
+                    f"Executable: {process.exe()}\n"
+                    f"Threads: {process.num_threads()}\n"
+                )
+                messagebox.showinfo("Process Details", details)
+            else:
+                messagebox.showerror("Error", "No process selected.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not fetch process details: {e}")
+
 
     def setup_footer(self):
         """Setup the footer section."""
-        ttk.Label(self.main_frame, text="Memory Tracker Tool - Version 1.0", font=("Arial", 10, "italic")).grid(row=6, column=0, pady=10)
+        footer_label = ttk.Label(
+            self.main_frame,
+            text="Memory Tracker Tool - Version 1.0",
+            font=("Arial", 10, "italic"),
+            anchor="center"
+        )
+        footer_label.grid(row=7, column=0, pady=10)  # Moved to row 7
+
+
 
     # --- Helper Methods ---
     def configure_table_columns(self, table, columns_config):
         """Configure columns for a Treeview table."""
         for col, config in columns_config.items():
             table.heading(col, text=col, command=lambda _col=col: self.sort_treeview(table, _col, False))
-            table.column(col, **config)
+            table.column(col, **config, stretch=tk.YES)  # Allow resizing of columns
+
 
     def schedule_background_updates(self):
         """Schedule background updates for process data."""
         self.executor.submit(self.refresh_process_cache)
         self.root.after(10000, self.schedule_background_updates)
-
-    def refresh_process_cache(self):
-        """Fetch and cache process data."""
-        try:
-            self.process_cache = list(psutil.process_iter(['pid', 'name', 'memory_info', 'cpu_percent', 'exe']))
-            self.last_cache_update = time()
-        except Exception as e:
-            print(f"Error refreshing process cache: {e}")
 
     def update_efficiency_bar(self):
         """Update the efficiency bar and status."""
@@ -193,43 +572,119 @@ class MemoryTrackerApp:
         self.root.after(2000, self.update_efficiency_bar)
 
     def update_usage_table(self):
-        """Update the usage analyzer table."""
-        processes = [
-            (p.info['name'], p.info['memory_info'].rss / (1024 * 1024), self.generate_recommendation(p.info['name'], p.info['memory_info'].rss / (1024 * 1024)))
-            for p in self.process_cache
-            if p.info.get('memory_info') and p.info['memory_info'].rss / (1024 * 1024) > self.usage_analyzer_threshold
-        ]
-        self.populate_usage_table(processes)
+        """Update the usage analyzer table and trigger notifications if enabled."""
+        print("update_usage_table called")  # Debug statement
+        try:
+            total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+            if self.usage_threshold_mb.get():
+                self.usage_analyzer_threshold = float(self.usage_threshold_mb.get())
+            elif self.usage_threshold_percent.get():
+                self.usage_analyzer_threshold = (float(self.usage_threshold_percent.get()) / 100) * total_memory_mb
+
+            # Create a set to track processes that have already triggered a notification
+            notified_processes = set()
+
+            processes = []
+            for p in self.process_cache:
+                try:
+                    if p.info.get('memory_info'):
+                        mem_usage = p.info['memory_info'].rss / (1024 * 1024)
+                        if mem_usage > self.usage_analyzer_threshold:
+                            processes.append((
+                                p.info['name'],
+                                mem_usage,
+                                self.generate_recommendation(p.info['name'], mem_usage),
+                            ))
+
+                            # Trigger notifications if enabled and not already sent
+                            if self.highest_memory_notifications.get() and p.info['name'] not in notified_processes:
+                                notification.notify(
+                                    title="High Memory Usage Detected",
+                                    message=f"{p.info['name']} is using {mem_usage:.2f} MB of memory.",
+                                    timeout=5,
+                                )
+                                notified_processes.add(p.info['name'])
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue  # Skip processes that can't be accessed
+
+            self.populate_usage_table(processes)
+        except ValueError as e:
+            print(f"Error in update_usage_table: {e}")
+
 
     def populate_usage_table(self, processes):
         """Efficiently update the usage table."""
+        print(f"Populating table with {len(processes)} processes.")  # DEBUG
         current_items = {self.usage_table.item(child)['values'][0]: child for child in self.usage_table.get_children()}
         new_items = {name: (name, f"{mem_usage:.2f} MB", recommendation) for name, mem_usage, recommendation in processes}
+
         for name, values in new_items.items():
             if name in current_items:
                 self.usage_table.item(current_items[name], values=values)
             else:
                 self.usage_table.insert("", "end", values=values)
+
         for name in current_items.keys() - new_items.keys():
             self.usage_table.delete(current_items[name])
 
+
     def update_flagged_table(self):
-        """Update the flagged applications table."""
-        flagged_processes = []
-        for proc in self.process_cache:
-            try:
-                mem_usage_mb = proc.info['memory_info'].rss / (1024 * 1024)
-                if mem_usage_mb > self.flagged_applications_threshold:
-                    flagged_processes.append((proc.info['name'], f"{mem_usage_mb:.2f} MB", "High Memory Usage"))
-            except Exception:
-                continue
-        self.populate_flagged_table(flagged_processes)
+        """Update the flagged applications table and trigger notifications if enabled."""
+        print("update_flagged_table called")  # Debug statement
+        try:
+            total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+            if self.flagged_threshold_mb.get():
+                self.flagged_applications_threshold = float(self.flagged_threshold_mb.get())
+            elif self.flagged_threshold_percent.get():
+                self.flagged_applications_threshold = (float(self.flagged_threshold_percent.get()) / 100) * total_memory_mb
+
+            # Create a set to track processes that have already triggered a notification
+            notified_processes = set()
+
+            flagged_processes = []
+            for p in self.process_cache:
+                try:
+                    if p.info.get('memory_info'):
+                        mem_usage = p.info['memory_info'].rss / (1024 * 1024)  # Convert to MB
+                        if mem_usage > self.flagged_applications_threshold:
+                            flagged_processes.append((
+                                p.info['name'],
+                                mem_usage,
+                                "High Memory Usage",
+                            ))
+
+                            # Trigger notifications if enabled and not already sent
+                            if self.flagged_memory_notifications.get() and p.info['name'] not in notified_processes:
+                                notification.notify(
+                                    title="Suspicious Memory Usage Detected",
+                                    message=f"{p.info['name']} is using {mem_usage:.2f} MB of memory.",
+                                    timeout=5,
+                                )
+                                notified_processes.add(p.info['name'])  # Mark as notified
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue  # Skip processes that can't be accessed
+
+            self.populate_flagged_table(flagged_processes)
+        except ValueError as e:
+            print(f"Error in update_flagged_table: {e}")
 
     def populate_flagged_table(self, flagged_processes):
-        """Populate the flagged table."""
-        self.flagged_table.delete(*self.flagged_table.get_children())
-        for process in flagged_processes:
-            self.flagged_table.insert("", "end", values=process)
+        """Efficiently update the flagged applications table."""
+        print(f"Populating flagged table with {len(flagged_processes)} processes.")  # Debug
+        current_items = {self.flagged_table.item(child)['values'][0]: child for child in self.flagged_table.get_children()}
+        new_items = {name: (name, f"{mem_usage:.2f} MB", reason) for name, mem_usage, reason in flagged_processes}
+
+        # Update existing rows and add new ones
+        for name, values in new_items.items():
+            if name in current_items:
+                self.flagged_table.item(current_items[name], values=values)
+            else:
+                self.flagged_table.insert("", "end", values=values)
+
+        # Remove rows that are no longer in the list
+        for name in current_items.keys() - new_items.keys():
+            self.flagged_table.delete(current_items[name])
+
 
     def generate_recommendation(self, app_name, memory_usage):
         """Generate a recommendation based on the application name and memory usage."""
@@ -276,6 +731,61 @@ class MemoryTrackerApp:
 
         # Default Recommendation
         return "Consider closing the application if not actively using it."
+    
+    def sync_threshold_fields(self, mb_entry, percent_entry, update_table_callback, source="mb"):
+        """Synchronize MB and percentage threshold fields with debounce."""
+        total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+
+        # Cancel any previously scheduled update
+        if hasattr(self, "debounce_timer") and self.debounce_timer:
+            self.root.after_cancel(self.debounce_timer)
+
+        try:
+            if source == "mb" and mb_entry.get():
+                mb_value = float(mb_entry.get())
+                percent_value = (mb_value / total_memory_mb) * 100
+                percent_entry.delete(0, tk.END)
+                percent_entry.insert(0, f"{percent_value:.2f}")
+            elif source == "percent" and percent_entry.get():
+                percent_value = float(percent_entry.get())
+                mb_value = (percent_value / 100) * total_memory_mb
+                mb_entry.delete(0, tk.END)
+                mb_entry.insert(0, f"{mb_value:.2f}")
+            
+            # Schedule the table update after 500ms
+            self.debounce_timer = self.root.after(2000, update_table_callback)
+        except ValueError:
+            pass  # Ignore invalid inputs
+
+
+    def sync_usage_thresholds(self, event=None):
+        total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+        try:
+            if event.widget == self.usage_threshold_mb and self.usage_threshold_mb.get():
+                mb_value = float(self.usage_threshold_mb.get())
+                percent_value = (mb_value / total_memory_mb) * 100
+                self.usage_threshold_percent.delete(0, tk.END)
+                self.usage_threshold_percent.insert(0, f"{percent_value:.2f}")
+                print(f"Updated usage threshold: {mb_value} MB ({percent_value:.2f}%)")  # Debug
+            elif event.widget == self.usage_threshold_percent and self.usage_threshold_percent.get():
+                percent_value = float(self.usage_threshold_percent.get())
+                mb_value = (percent_value / 100) * total_memory_mb
+                self.usage_threshold_mb.delete(0, tk.END)
+                self.usage_threshold_mb.insert(0, f"{mb_value:.2f}")
+                print(f"Updated usage threshold: {percent_value:.2f}% ({mb_value} MB)")  # Debug
+            self.update_usage_table()
+        except ValueError:
+            pass
+
+    def restore_defaults(self):
+        """Restore default thresholds."""
+        total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
+        self.usage_analyzer_threshold = max(200, total_memory_mb * 0.02)
+        self.flagged_applications_threshold = max(1500, total_memory_mb * 0.15)
+        self.update_threshold_inputs()  # Update inputs dynamically
+        self.update_usage_table()
+        self.update_flagged_table()
+        print("Thresholds restored to default values.")
 
 
     def sort_treeview(self, treeview, col, reverse):
