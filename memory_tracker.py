@@ -30,7 +30,6 @@ class MemoryTrackerApp:
         self.highest_memory_notifications = tk.BooleanVar(value=False)  # Default: Notifications are off
         self.flagged_memory_notifications = tk.BooleanVar(value=True)  # Default: Enabled
 
-
         # Main Frame
         self.main_frame = ttk.Frame(self.root, padding=10)
         self.main_frame.grid(row=0, column=0, sticky="nsew")
@@ -46,12 +45,18 @@ class MemoryTrackerApp:
         self.setup_footer()  # Footer
         self.setup_context_menus()  # Setup context menus for both tables
 
+        # Initialize Process Cache and Populate Tables
+        self.initialize_process_data()
 
         # Start background updates
         self.schedule_background_updates()
         self.update_efficiency_bar()
-        self.update_usage_table()  # Populate on startup
-        self.update_flagged_table()  # Populate on startup
+
+    def initialize_process_data(self):
+        """Refresh the process cache and populate the tables."""
+        self.refresh_process_cache()
+        self.update_usage_table()
+        self.update_flagged_table()
 
     def refresh_process_cache(self):
         """Fetch and cache process data."""
@@ -61,7 +66,6 @@ class MemoryTrackerApp:
             print(f"Process cache updated: {len(self.process_cache)} processes found.")  # Debug
         except Exception as e:
             print(f"Error refreshing process cache: {e}")
-
 
     # --- GUI Setup Methods ---
     def setup_title(self):
@@ -144,15 +148,16 @@ class MemoryTrackerApp:
             self.usage_frame,
             text="Displays applications consuming significant memory. Adjust the threshold to control which applications are shown.",
             font=("Arial", 10),
-            anchor="w",
+            justify="left",  # Align text to the left
+            anchor="w"      # Align within the container to the left
         )
-        description_label.pack(pady=(0, 10), padx=5)
+        description_label.pack(pady=(0, 10), padx=5, fill="x")  # Added fill to ensure it spans the frame
 
         # Threshold inputs for Highest Memory Applications
         threshold_frame = ttk.Frame(self.usage_frame)
         threshold_frame.pack(fill="x", padx=5, pady=(0, 10))
 
-        ttk.Label(threshold_frame, text="Usage Analyzer Threshold (MB):", font=("Arial", 10)).grid(
+        ttk.Label(threshold_frame, text="Threshold (MB):", font=("Arial", 10)).grid(
             row=0, column=0, sticky="w", padx=(0, 5)
         )
         self.usage_threshold_mb = ttk.Entry(threshold_frame, font=("Arial", 10), width=10)
@@ -166,16 +171,18 @@ class MemoryTrackerApp:
         self.usage_threshold_percent.grid(row=0, column=3, sticky="w")
         self.usage_threshold_percent.insert(0, f"{(self.usage_analyzer_threshold / (psutil.virtual_memory().total / (1024 * 1024))) * 100:.2f}")
 
-        # Reset to Default Button with Description
-        reset_button = ttk.Button(threshold_frame, text="Reset to Default", command=self.reset_usage_threshold)
-        reset_button.grid(row=0, column=4, padx=(10, 0))
+        # Reset to Default Button with Info Icon
+        reset_frame = ttk.Frame(threshold_frame)
+        reset_frame.grid(row=0, column=4, padx=(10, 0))
 
-        # Explanation Label
-        ttk.Label(
-            threshold_frame,
-            text="Defaults: 2% of total memory or 200 MB, whichever is higher.",
-            font=("Arial", 9, "italic")
-        ).grid(row=1, column=0, columnspan=5, sticky="w", padx=(0, 10), pady=(5, 0))
+        reset_button = ttk.Button(reset_frame, text="Reset to Default", command=self.reset_usage_threshold)
+        reset_button.pack(side="left")
+
+        # Add info icon next to the button
+        info_icon = tk.Canvas(reset_frame, width=16, height=16, highlightthickness=0, bg=self.root.cget("background"))
+        info_icon.pack(side="left", padx=(5, 0))
+        self.draw_info_icon(info_icon)  # Draw the icon
+        self.bind_tooltip(info_icon, "Defaults are calculated as 2% of total memory or 200 MB, whichever is higher, to ensure compatibility across different systems.")
 
         # Bind the syncing function to both fields
         self.usage_threshold_mb.bind("<KeyRelease>", lambda e: self.sync_threshold_fields(
@@ -184,34 +191,37 @@ class MemoryTrackerApp:
             self.usage_threshold_mb, self.usage_threshold_percent, self.update_usage_table, source="percent"))
 
         # Add notification toggle
-        notifications_frame = ttk.Frame(self.usage_frame)
-        notifications_frame.pack(fill="x", padx=5, pady=(10, 0))
+        notif_checkbox_frame = ttk.Frame(self.usage_frame)
+        notif_checkbox_frame.pack(fill="x", padx=5, pady=(0, 10))  # Adjusted padding to match "Suspicious Applications"
 
         notifications_checkbox = ttk.Checkbutton(
-            notifications_frame,
-            text="Enable Notifications for High Memory Applications",
+            notif_checkbox_frame,
+            text="Enable Notifications",
             variable=self.highest_memory_notifications
         )
-        notifications_checkbox.pack(anchor="w")
+        notifications_checkbox.pack(anchor="w", padx=(0, 10))  # Align to the left and add padding to match the other section
 
         # Table for applications
         scroll_y = ttk.Scrollbar(self.usage_frame, orient="vertical")
+        scroll_x = ttk.Scrollbar(self.usage_frame, orient="horizontal")
         columns = ("Application", "Usage", "Recommendation")
 
         self.usage_table = ttk.Treeview(
-            self.usage_frame, columns=columns, show="headings", height=15, yscrollcommand=scroll_y.set
+            self.usage_frame, columns=columns, show="headings", height=15,
+            yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set
         )
         scroll_y.config(command=self.usage_table.yview)
+        scroll_x.config(command=self.usage_table.xview)
         scroll_y.pack(side="right", fill="y")
+        scroll_x.pack(side="bottom", fill="x")
         self.usage_table.pack(fill="both", expand=True, padx=5)
         self.usage_table.bind("<Button-3>", self.show_usage_context_menu)
 
         self.configure_table_columns(self.usage_table, {
-            "Application": {"width": 200, "anchor": "center"},
+            "Application": {"width": 150, "anchor": "center"},
             "Usage": {"width": 100, "anchor": "center"},
-            "Recommendation": {"width": 400, "anchor": "w"},
+            "Recommendation": {"width": 500, "anchor": "w"},
         })
-
 
 
 
@@ -318,15 +328,16 @@ class MemoryTrackerApp:
             self.flagged_frame,
             text="Lists applications with unusually high memory usage. Adjust the threshold to detect potential memory leaks or harmful programs.",
             font=("Arial", 10),
-            anchor="w",
+            justify="left",  # Align text to the left
+            anchor="w"      # Align within the container to the left
         )
-        description_label.pack(pady=(0, 10), padx=5)
+        description_label.pack(pady=(0, 10), padx=5, fill="x")  # Added fill to ensure it spans the frame
 
         # Threshold inputs for Suspicious Applications
         threshold_frame = ttk.Frame(self.flagged_frame)
         threshold_frame.pack(fill="x", padx=5, pady=(0, 10))
 
-        ttk.Label(threshold_frame, text="Flagged Applications Threshold (MB):", font=("Arial", 10)).grid(
+        ttk.Label(threshold_frame, text="Threshold (MB):", font=("Arial", 10)).grid(
             row=0, column=0, sticky="w", padx=(0, 5)
         )
         self.flagged_threshold_mb = ttk.Entry(threshold_frame, font=("Arial", 10), width=10)
@@ -340,16 +351,18 @@ class MemoryTrackerApp:
         self.flagged_threshold_percent.grid(row=0, column=3, sticky="w")
         self.flagged_threshold_percent.insert(0, f"{(self.flagged_applications_threshold / (psutil.virtual_memory().total / (1024 * 1024))) * 100:.2f}")
 
-        # Reset to Default Button with Description
-        reset_button = ttk.Button(threshold_frame, text="Reset to Default", command=self.reset_flagged_threshold)
-        reset_button.grid(row=0, column=4, padx=(10, 0))
+        # Reset to Default Button with Info Icon
+        reset_frame = ttk.Frame(threshold_frame)
+        reset_frame.grid(row=0, column=4, padx=(10, 0))
 
-        # Explanation Label
-        ttk.Label(
-            threshold_frame,
-            text="Defaults: 15% of total memory or 1500 MB, whichever is higher.",
-            font=("Arial", 9, "italic")
-        ).grid(row=1, column=0, columnspan=5, sticky="w", padx=(0, 10), pady=(5, 0))
+        reset_button = ttk.Button(reset_frame, text="Reset to Default", command=self.reset_flagged_threshold)
+        reset_button.pack(side="left")
+
+        # Add info icon next to the button
+        info_icon = tk.Canvas(reset_frame, width=16, height=16, highlightthickness=0, bg=self.root.cget("background"))
+        info_icon.pack(side="left", padx=(5, 0))
+        self.draw_info_icon(info_icon)  # Draw the icon
+        self.bind_tooltip(info_icon, "Defaults are calculated as 15% of total memory or 1500 MB, whichever is higher, to detect unusually high memory usage.")
 
         # Bind the syncing function to both fields
         self.flagged_threshold_mb.bind("<KeyRelease>", lambda e: self.sync_threshold_fields(
@@ -367,21 +380,55 @@ class MemoryTrackerApp:
 
         # Table for flagged applications
         scroll_y = ttk.Scrollbar(self.flagged_frame, orient="vertical")
+        scroll_x = ttk.Scrollbar(self.flagged_frame, orient="horizontal")
         columns = ("Application", "Usage", "Reason")
 
         self.flagged_table = ttk.Treeview(
-            self.flagged_frame, columns=columns, show="headings", height=12, yscrollcommand=scroll_y.set
+            self.flagged_frame, columns=columns, show="headings", height=12,
+            yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set
         )
         scroll_y.config(command=self.flagged_table.yview)
+        scroll_x.config(command=self.flagged_table.xview)
         scroll_y.pack(side="right", fill="y")
+        scroll_x.pack(side="bottom", fill="x")
         self.flagged_table.pack(fill="both", expand=True, padx=5)
         self.flagged_table.bind("<Button-3>", self.show_flagged_context_menu)
 
         self.configure_table_columns(self.flagged_table, {
-            "Application": {"width": 200, "anchor": "center"},
+            "Application": {"width": 150, "anchor": "center"},
             "Usage": {"width": 100, "anchor": "center"},
-            "Reason": {"width": 400, "anchor": "w"},
+            "Reason": {"width": 300, "anchor": "w"},
         })
+
+
+
+    def draw_info_icon(self, canvas):
+        """Draw a simple 'i' information icon on the canvas."""
+        canvas.create_oval(2, 2, 14, 14, fill="blue", outline="blue")
+        canvas.create_text(8, 8, text="i", fill="white", font=("Arial", 10, "bold"))
+
+
+    def bind_tooltip(self, widget, text):
+        """Bind a tooltip to a widget."""
+        tooltip = tk.Toplevel(self.root, bg="white", padx=5, pady=3)
+        tooltip.wm_overrideredirect(True)  # Remove window decorations
+        tooltip.withdraw()  # Hide by default
+        tooltip_label = tk.Label(tooltip, text=text, font=("Arial", 9), bg="white", justify="left")
+        tooltip_label.pack()
+
+        def show_tooltip(event):
+            x, y, _, _ = widget.bbox("all")  # Get widget's bounding box
+            x += widget.winfo_rootx() + 20  # Adjust tooltip position
+            y += widget.winfo_rooty() + 10
+            tooltip.geometry(f"+{x}+{y}")
+            tooltip.deiconify()
+
+        def hide_tooltip(event):
+            tooltip.withdraw()
+
+        widget.bind("<Enter>", show_tooltip)
+        widget.bind("<Leave>", hide_tooltip)
+
 
     
     def reset_usage_threshold(self):
@@ -581,35 +628,37 @@ class MemoryTrackerApp:
             elif self.usage_threshold_percent.get():
                 self.usage_analyzer_threshold = (float(self.usage_threshold_percent.get()) / 100) * total_memory_mb
 
-            # Create a set to track processes that have already triggered a notification
-            notified_processes = set()
-
+            notified_processes = set()  # Track processes already notified
             processes = []
-            for p in self.process_cache:
-                try:
-                    if p.info.get('memory_info'):
-                        mem_usage = p.info['memory_info'].rss / (1024 * 1024)
-                        if mem_usage > self.usage_analyzer_threshold:
-                            processes.append((
-                                p.info['name'],
-                                mem_usage,
-                                self.generate_recommendation(p.info['name'], mem_usage),
-                            ))
 
-                            # Trigger notifications if enabled and not already sent
-                            if self.highest_memory_notifications.get() and p.info['name'] not in notified_processes:
-                                notification.notify(
-                                    title="High Memory Usage Detected",
-                                    message=f"{p.info['name']} is using {mem_usage:.2f} MB of memory.",
-                                    timeout=5,
-                                )
-                                notified_processes.add(p.info['name'])
+            for proc in self.process_cache:
+                try:
+                    if 'memory_info' not in proc.info:
+                        continue
+                        
+                    memory_mb = proc.info['memory_info'].rss / (1024 * 1024)
+                    if memory_mb >= self.usage_analyzer_threshold:
+                        # Generate recommendations using the new function
+                        recommendation = self.generate_detailed_recommendation(proc.info['name'], memory_mb, total_memory_mb)
+                        
+                        # Add to process list for table
+                        processes.append((proc.info['name'], memory_mb, recommendation))
+                        
+                        # Trigger notifications if enabled and not already notified
+                        if self.highest_memory_notifications.get() and proc.info['name'] not in notified_processes:
+                            notification.notify(
+                                title="High Memory Usage Detected",
+                                message=f"{proc.info['name']} is using {memory_mb:.2f} MB of memory.",
+                                timeout=5,
+                            )
+                            notified_processes.add(proc.info['name'])
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue  # Skip processes that can't be accessed
+                    continue  # Skip inaccessible processes
 
             self.populate_usage_table(processes)
         except ValueError as e:
             print(f"Error in update_usage_table: {e}")
+
 
 
     def populate_usage_table(self, processes):
@@ -626,6 +675,7 @@ class MemoryTrackerApp:
 
         for name in current_items.keys() - new_items.keys():
             self.usage_table.delete(current_items[name])
+
 
 
     def update_flagged_table(self):
@@ -731,6 +781,52 @@ class MemoryTrackerApp:
 
         # Default Recommendation
         return "Consider closing the application if not actively using it."
+    
+    def generate_detailed_recommendation(self, app_name, memory_mb, total_memory_mb):
+        """Generate a detailed recommendation based on memory usage patterns."""
+        app_name_lower = app_name.lower()
+        memory_percent = (memory_mb / total_memory_mb) * 100  # Calculate memory usage as a percentage of total
+
+        # Base recommendation levels
+        if memory_percent > 50:
+            base_recommendation = "CRITICAL: Process consuming over 50% of system memory. "
+        elif memory_mb > self.flagged_applications_threshold:
+            base_recommendation = "WARNING: High memory usage detected. "
+        elif memory_mb > self.usage_analyzer_threshold * 3:
+            base_recommendation = "High Usage: "
+        elif memory_mb > self.usage_analyzer_threshold * 2:
+            base_recommendation = "Moderate Usage: "
+        else:
+            base_recommendation = "Usage is within acceptable limits. "
+
+        # Application-specific recommendations
+        if any(keyword in app_name_lower for keyword in ["chrome", "firefox", "safari", "edge", "opera", "brave"]):
+            recommendation = base_recommendation + "Consider closing unused tabs or restarting the browser."
+        elif any(keyword in app_name_lower for keyword in ["code", "pycharm", "intellij", "eclipse", "visual studio"]):
+            recommendation = base_recommendation + "Close unused projects or restart the IDE to free up resources."
+        elif any(keyword in app_name_lower for keyword in ["spotify", "vlc", "netflix", "youtube", "prime"]):
+            recommendation = base_recommendation + "Pause the application if not actively using it."
+        elif any(keyword in app_name_lower for keyword in ["zoom", "teams", "slack", "discord", "skype"]):
+            recommendation = base_recommendation + "Close unused calls or chats to save resources."
+        elif any(keyword in app_name_lower for keyword in ["game", "steam", "epic", "blizzard", "riot"]):
+            recommendation = base_recommendation + "Close background apps to improve game performance."
+        elif any(keyword in app_name_lower for keyword in ["onedrive", "dropbox", "google drive", "icloud"]):
+            recommendation = base_recommendation + "Pause syncing to free up memory."
+        elif any(keyword in app_name_lower for keyword in ["word", "excel", "powerpoint", "outlook", "office"]):
+            recommendation = base_recommendation + "Close unused documents or spreadsheets."
+        elif any(keyword in app_name_lower for keyword in ["premiere", "photoshop", "after effects", "final cut", "lightroom", "gimp"]):
+            recommendation = base_recommendation + "Close unused projects or export completed work to free up resources."
+        elif any(keyword in app_name_lower for keyword in ["svchost", "system", "winlogon", "lsass"]):
+            recommendation = "System Process: Normal Windows service. Leave running."
+        else:
+            # Default recommendation
+            if memory_mb > self.usage_analyzer_threshold * 2:
+                recommendation = base_recommendation + "Restart the application to release unused memory."
+            else:
+                recommendation = base_recommendation + "Consider closing the application if not actively using it."
+
+        return recommendation
+
     
     def sync_threshold_fields(self, mb_entry, percent_entry, update_table_callback, source="mb"):
         """Synchronize MB and percentage threshold fields with debounce."""
