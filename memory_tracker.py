@@ -59,13 +59,37 @@ class MemoryTrackerApp:
         self.update_flagged_table()
 
     def refresh_process_cache(self):
-        """Fetch and cache process data."""
+        """Fetch and cache process data, excluding system-critical processes."""
         try:
-            self.process_cache = list(psutil.process_iter(['pid', 'name', 'memory_info', 'cpu_percent', 'exe']))
+            # Define system-critical process names or conditions to exclude
+            critical_names = {"System", "Idle", "svchost.exe", "winlogon.exe", "services.exe", "csrss.exe", "smss.exe", "lsass.exe"}
+
+            def is_system_critical(proc):
+                """Determine if a process is system-critical."""
+                try:
+                    # Exclude based on process name
+                    if proc.info.get('name') in critical_names:
+                        return True
+                    # Exclude processes without a name or executable path
+                    if not proc.info.get('name') or not proc.info.get('exe'):
+                        return True
+                    # Exclude processes owned by the system user (e.g., PID 0 or critical system PIDs)
+                    if proc.info['pid'] == 0 or proc.info['pid'] == 4:  # PID 4 is commonly "System" on Windows
+                        return True
+                    return False
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    return True  # Exclude inaccessible or zombie processes
+
+            # Fetch and filter processes
+            self.process_cache = [
+                proc for proc in psutil.process_iter(['pid', 'name', 'memory_info', 'cpu_percent', 'exe'])
+                if not is_system_critical(proc)
+            ]
             self.last_cache_update = time()
-            print(f"Process cache updated: {len(self.process_cache)} processes found.")  # Debug
+            print(f"Process cache updated: {len(self.process_cache)} processes found (excluding system-critical).")  # Debug
         except Exception as e:
             print(f"Error refreshing process cache: {e}")
+
 
     # --- GUI Setup Methods ---
     def setup_title(self):
@@ -78,17 +102,41 @@ class MemoryTrackerApp:
         self.score_frame = ttk.LabelFrame(self.main_frame, text="Overall Efficiency", padding=10)
         self.score_frame.grid(row=1, column=0, sticky="ew", pady=15)
 
+        # Configure the frame to center all contents
+        self.score_frame.grid_columnconfigure(0, weight=1)
+
         # Efficiency bar
         self.efficiency_bar = ttk.Progressbar(self.score_frame, orient="horizontal", length=300, mode="determinate")
-        self.efficiency_bar.pack(fill="x", pady=5, padx=10)
+        self.efficiency_bar.grid(row=0, column=0, pady=5, padx=10, sticky="ew")
 
-        # Efficiency score label
-        self.efficiency_label = ttk.Label(self.score_frame, text="Efficiency Score: Calculating...", font=("Arial", 12))
-        self.efficiency_label.pack(pady=(5, 0))  # Small padding above
+        # Efficiency score label and icon in a nested frame
+        efficiency_label_frame = ttk.Frame(self.score_frame)
+        efficiency_label_frame.grid(row=1, column=0, pady=(5, 0), sticky="ew")
+        efficiency_label_frame.grid_columnconfigure(0, weight=1)  # Center the content
+
+        # Add text and icon to the nested frame
+        text_and_icon_frame = ttk.Frame(efficiency_label_frame)
+        text_and_icon_frame.grid(row=0, column=0)  # Center the text and icon horizontally
+        text_and_icon_frame.grid_columnconfigure(0, weight=1)
+
+        self.efficiency_label = ttk.Label(text_and_icon_frame, text="Efficiency Score: Calculating...", font=("Arial", 12), anchor="center")
+        self.efficiency_label.grid(row=0, column=0, padx=(0, 5))
+
+        # Add info icon next to the Efficiency Score label
+        info_icon = tk.Canvas(text_and_icon_frame, width=16, height=16, highlightthickness=0, bg=self.root.cget("background"))
+        info_icon.grid(row=0, column=1)  # Place the icon next to the text
+        self.draw_info_icon(info_icon)  # Draw the 'i' icon
+
+        # Add tooltip to the icon
+        self.bind_tooltip(info_icon, "Efficiency Score measures the percentage of free memory relative to total system memory.\n"
+                                    "Green: >60% free memory\n"
+                                    "Orange: 30%-60% free memory\n"
+                                    "Red: <30% free memory")
 
         # Status label
-        self.efficiency_status = ttk.Label(self.score_frame, text="Status: Calculating...", font=("Arial", 12), foreground="green")
-        self.efficiency_status.pack(pady=(0, 5))  # Small padding below
+        self.efficiency_status = ttk.Label(self.score_frame, text="Status: Calculating...", font=("Arial", 12), anchor="center", foreground="green")
+        self.efficiency_status.grid(row=2, column=0, pady=(5, 5), sticky="ew")  # Center the status label horizontally
+
 
 
     def update_percentage_from_mb(self, event=None):
@@ -148,10 +196,10 @@ class MemoryTrackerApp:
             self.usage_frame,
             text="Displays applications consuming significant memory. Adjust the threshold to control which applications are shown.",
             font=("Arial", 10),
-            justify="left",  # Align text to the left
-            anchor="w"      # Align within the container to the left
+            justify="left",
+            anchor="w" 
         )
-        description_label.pack(pady=(0, 10), padx=5, fill="x")  # Added fill to ensure it spans the frame
+        description_label.pack(pady=(0, 10), padx=5, fill="x") 
 
         # Threshold inputs for Highest Memory Applications
         threshold_frame = ttk.Frame(self.usage_frame)
@@ -397,7 +445,7 @@ class MemoryTrackerApp:
         self.configure_table_columns(self.flagged_table, {
             "Application": {"width": 150, "anchor": "center"},
             "Usage": {"width": 100, "anchor": "center"},
-            "Reason": {"width": 300, "anchor": "w"},
+            "Reason": {"width": 500, "anchor": "w"},
         })
 
 
@@ -566,21 +614,44 @@ class MemoryTrackerApp:
         """View detailed information about the selected process."""
         try:
             if self.selected_process_info:
-                process = psutil.Process(self.selected_process_info["pid"])
-                details = (
-                    f"Name: {process.name()}\n"
-                    f"PID: {process.pid}\n"
-                    f"Status: {process.status()}\n"
-                    f"CPU Usage: {process.cpu_percent(interval=0.1)}%\n"
-                    f"Memory Usage: {process.memory_info().rss / (1024 * 1024):.2f} MB\n"
-                    f"Executable: {process.exe()}\n"
-                    f"Threads: {process.num_threads()}\n"
-                )
-                messagebox.showinfo("Process Details", details)
+                app_name = self.selected_process_info.get("name")
+                
+                # Aggregate memory usage for all processes with the same name
+                total_memory_mb = 0
+                process_details = []  # Store details for all matching processes
+                for proc in self.process_cache:
+                    try:
+                        if proc.info['name'] == app_name:
+                            memory_mb = proc.info['memory_info'].rss / (1024 * 1024)  # Convert to MB
+                            total_memory_mb += memory_mb
+                            process_details.append({
+                                "PID": proc.info['pid'],
+                                "Memory": f"{memory_mb:.2f} MB",
+                                "Executable": proc.info.get('exe', 'N/A'),
+                                "Status": proc.status(),
+                                "Threads": proc.num_threads(),
+                            })
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+
+                # Generate the details message
+                details_message = f"Name: {app_name}\n" \
+                                f"Total Memory Usage: {total_memory_mb:.2f} MB\n\n"
+
+                for details in process_details:
+                    details_message += f"PID: {details['PID']}\n" \
+                                    f"Memory: {details['Memory']}\n" \
+                                    f"Executable: {details['Executable']}\n" \
+                                    f"Status: {details['Status']}\n" \
+                                    f"Threads: {details['Threads']}\n\n"
+
+                # Show the aggregated details
+                messagebox.showinfo("Process Details", details_message)
             else:
                 messagebox.showerror("Error", "No process selected.")
         except Exception as e:
             messagebox.showerror("Error", f"Could not fetch process details: {e}")
+
 
 
     def setup_footer(self):
@@ -619,51 +690,49 @@ class MemoryTrackerApp:
         self.root.after(2000, self.update_efficiency_bar)
 
     def update_usage_table(self):
-        """Update the usage analyzer table and trigger notifications if enabled."""
-        print("update_usage_table called")  # Debug statement
+        """Update the Usage Analyzer table with processes exceeding the usage threshold."""
         try:
+            # Refresh the process cache to ensure up-to-date data
+            self.refresh_process_cache()
+            
+            # Aggregate memory usage by process name
+            aggregated_memory = self.aggregate_memory_by_name(self.process_cache)
+
+            # Filter processes that exceed the usage threshold
             total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
-            if self.usage_threshold_mb.get():
-                self.usage_analyzer_threshold = float(self.usage_threshold_mb.get())
-            elif self.usage_threshold_percent.get():
-                self.usage_analyzer_threshold = (float(self.usage_threshold_percent.get()) / 100) * total_memory_mb
+            self.usage_analyzer_threshold = float(self.usage_threshold_mb.get() or self.usage_analyzer_threshold)
 
             notified_processes = set()  # Track processes already notified
             processes = []
 
-            for proc in self.process_cache:
-                try:
-                    if 'memory_info' not in proc.info:
-                        continue
-                        
-                    memory_mb = proc.info['memory_info'].rss / (1024 * 1024)
-                    if memory_mb >= self.usage_analyzer_threshold:
-                        # Generate recommendations using the new function
-                        recommendation = self.generate_detailed_recommendation(proc.info['name'], memory_mb, total_memory_mb)
-                        
-                        # Add to process list for table
-                        processes.append((proc.info['name'], memory_mb, recommendation))
-                        
-                        # Trigger notifications if enabled and not already notified
-                        if self.highest_memory_notifications.get() and proc.info['name'] not in notified_processes:
-                            notification.notify(
-                                title="High Memory Usage Detected",
-                                message=f"{proc.info['name']} is using {memory_mb:.2f} MB of memory.",
-                                timeout=5,
-                            )
-                            notified_processes.add(proc.info['name'])
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue  # Skip inaccessible processes
+            for name, memory in aggregated_memory.items():
+                if memory >= self.usage_analyzer_threshold:
+                    # Generate recommendations
+                    recommendation = self.generate_detailed_recommendation(name, memory, total_memory_mb)
+                    processes.append((name, memory, recommendation))
 
+                    # Trigger notifications if enabled
+                    if self.highest_memory_notifications.get() and name not in notified_processes:
+                        notification.notify(
+                            title="High Memory Usage Detected",
+                            message=f"{name} is using {memory:.2f} MB of memory.\n{recommendation}",
+                            timeout=5,
+                        )
+                        notified_processes.add(name)
+
+            # Populate the table with the filtered processes
             self.populate_usage_table(processes)
         except ValueError as e:
             print(f"Error in update_usage_table: {e}")
+        except Exception as e:
+            print(f"Unexpected error in update_usage_table: {e}")
+
 
 
 
     def populate_usage_table(self, processes):
         """Efficiently update the usage table."""
-        print(f"Populating table with {len(processes)} processes.")  # DEBUG
+        print(f"Populating table with {len(processes)} processes.")
         current_items = {self.usage_table.item(child)['values'][0]: child for child in self.usage_table.get_children()}
         new_items = {name: (name, f"{mem_usage:.2f} MB", recommendation) for name, mem_usage, recommendation in processes}
 
@@ -679,44 +748,42 @@ class MemoryTrackerApp:
 
 
     def update_flagged_table(self):
-        """Update the flagged applications table and trigger notifications if enabled."""
-        print("update_flagged_table called")  # Debug statement
+        """Update the Flagged Applications table with processes exceeding the flagged threshold."""
         try:
+            # Refresh the process cache to ensure up-to-date data
+            self.refresh_process_cache()
+            
+            # Aggregate memory usage by process name
+            aggregated_memory = self.aggregate_memory_by_name(self.process_cache)
+
+            # Filter processes that exceed the flagged threshold
             total_memory_mb = psutil.virtual_memory().total / (1024 * 1024)
-            if self.flagged_threshold_mb.get():
-                self.flagged_applications_threshold = float(self.flagged_threshold_mb.get())
-            elif self.flagged_threshold_percent.get():
-                self.flagged_applications_threshold = (float(self.flagged_threshold_percent.get()) / 100) * total_memory_mb
+            self.flagged_applications_threshold = float(self.flagged_threshold_mb.get() or self.flagged_applications_threshold)
 
-            # Create a set to track processes that have already triggered a notification
-            notified_processes = set()
-
+            notified_processes = set()  # Track processes already notified
             flagged_processes = []
-            for p in self.process_cache:
-                try:
-                    if p.info.get('memory_info'):
-                        mem_usage = p.info['memory_info'].rss / (1024 * 1024)  # Convert to MB
-                        if mem_usage > self.flagged_applications_threshold:
-                            flagged_processes.append((
-                                p.info['name'],
-                                mem_usage,
-                                "High Memory Usage",
-                            ))
 
-                            # Trigger notifications if enabled and not already sent
-                            if self.flagged_memory_notifications.get() and p.info['name'] not in notified_processes:
-                                notification.notify(
-                                    title="Suspicious Memory Usage Detected",
-                                    message=f"{p.info['name']} is using {mem_usage:.2f} MB of memory.",
-                                    timeout=5,
-                                )
-                                notified_processes.add(p.info['name'])  # Mark as notified
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue  # Skip processes that can't be accessed
+            for name, memory in aggregated_memory.items():
+                if memory >= self.flagged_applications_threshold:
+                    flagged_processes.append((name, memory, "High Memory Usage"))
+                    recommendation = self.generate_detailed_recommendation(name, memory, total_memory_mb)
 
+                    # Trigger notifications if enabled
+                    if self.flagged_memory_notifications.get() and name not in notified_processes:
+                        notification.notify(
+                            title="Suspicious Memory Usage Detected",
+                            message=f"{name} is using {memory:.2f} MB of memory.\n{recommendation}",
+                            timeout=5,
+                        )
+                        notified_processes.add(name)
+
+            # Populate the table with the flagged processes
             self.populate_flagged_table(flagged_processes)
         except ValueError as e:
             print(f"Error in update_flagged_table: {e}")
+        except Exception as e:
+            print(f"Unexpected error in update_flagged_table: {e}")
+
 
     def populate_flagged_table(self, flagged_processes):
         """Efficiently update the flagged applications table."""
@@ -781,7 +848,19 @@ class MemoryTrackerApp:
 
         # Default Recommendation
         return "Consider closing the application if not actively using it."
-    
+
+    def aggregate_memory_by_name(self, processes):
+        """Aggregate memory usage by process name."""
+        aggregated = {}
+        for proc in processes:
+            try:
+                name = proc.info.get('name', 'Unknown')
+                memory = proc.info['memory_info'].rss / (1024 * 1024)  # Convert to MB
+                aggregated[name] = aggregated.get(name, 0) + memory
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+        return aggregated
+
     def generate_detailed_recommendation(self, app_name, memory_mb, total_memory_mb):
         """Generate a detailed recommendation based on memory usage patterns."""
         app_name_lower = app_name.lower()
