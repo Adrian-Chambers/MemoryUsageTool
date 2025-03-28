@@ -1,50 +1,62 @@
 # Memory Tracker Tool
 
-## Description
-The Memory Tracker Tool is a Python application built using `tkinter` for the graphical user interface (GUI) and `plyer` for system notifications. It provides a visual interface to monitor system memory usage, analyze application behavior, and receive notifications based on user preferences.
+A Python application for monitoring memory usage of running processes. This tool helps identify memory-intensive applications and provides recommendations to optimize system performance.
 
 ## Features
-- **Overall Efficiency**: Displays the system memory usage and efficiency score.
-- **Usage Analyzer**: Lists applications consuming memory with recommendations.
-- **Notification Settings**: Allows users to set up notifications based on memory usage patterns.
-- **Flagged Applications**: Displays applications that are flagged for high memory usage or unusual behavior.
 
-## Requirements
+- Real-time memory efficiency monitoring
+- Tracking of applications with high memory usage
+- Detection of suspicious applications that may be causing memory leaks
+- Customizable memory thresholds for alerts
+- Desktop notifications for high memory usage
+- Process management (view details, kill processes, open file locations)
 
-- Python 3.x
-- Required Python libraries:
-  - `tkinter`
-  - `plyer` (for system notifications)
+## Project Structure
 
-You can install the required libraries with the following command:
+The application has been refactored into a modular structure:
 
-```bash
-pip install plyer
+```
+memory_tracker/
+├── main.py                  # Entry point for the application
+├── requirements.txt         # Dependencies
+├── gui/                     # GUI-related modules
+│   ├── __init__.py
+│   ├── app.py               # Main application class
+│   ├── components.py        # GUI components and tables
+│   └── tooltips.py          # Tooltip functionality
+└── utils/                   # Utility functions
+    ├── __init__.py
+    ├── memory_utils.py      # Memory analysis utilities
+    ├── notification_utils.py # Notification handling
+    └── process_utils.py     # Process management utilities
 ```
 
-## Running the Application
+## Installation
 
-### Step 1: Clone the repository
-First, clone the GitHub repository to your local machine:
+1. Clone the repository
+2. Install the required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
 
-```bash
-git clone https://github.com/Adrian-Chambers/MemoryUsageTool.git
+## Usage
+
+Run the application with:
+
+```
+python main.py
 ```
 
-### Step 2: Install dependencies
-Navigate to the project folder and install the required dependencies using `pip`:
+## Dependencies
 
-```bash
-cd MemoryUsageTool
-```
+- psutil: Process and system utilities
+- plyer: Cross-platform notifications
+- ttkthemes: Themed Tkinter widgets
 
-**Note**: If `requirements.txt` is not available, manually install `plyer` with the command mentioned earlier.
+## Customizing Thresholds
 
-### Step 3: Run the application
-Once all dependencies are installed, you can run the application with the following command:
+- **Usage Analyzer Threshold**: Controls which applications are shown in the "Highest Memory Applications" table. Default: 2% of total memory or 200 MB, whichever is higher.
+  
+- **Flagged Applications Threshold**: Controls which applications are considered suspicious. Default: 15% of total memory or 1500 MB, whichever is higher.
 
-```bash
-python memory_tracker.py
-```
-
-This will open the Memory Tracker Tool GUI, and you can start using it to track system memory usage and receive notifications.
+Both thresholds can be adjusted using either MB values or percentages.
